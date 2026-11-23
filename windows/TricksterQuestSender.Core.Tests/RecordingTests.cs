@@ -7,6 +7,15 @@ public class RecordingTests
 {
     private static TextHit Hit(string text, double x, double y) => new(text, new ScreenRect(x - 50, y - 10, 100, 20));
 
+    /// <summary>Like the real game: the last page says "[Chaos Integer.62Byte]" in its text.</summary>
+    private const string LastPageBody = "โค้ดยิ่งมีค่ามาก [Chaos Integer.62Byte] ช่วยหามาใหม่อีก 50 ชิ้น";
+
+    private static FakeGame RealisticGame(string[]? pages = null, bool garble = false) => new(pages)
+    {
+        GarbleOcr = garble,
+        BodyText = page => page == 4 ? LastPageBody : "ข้อความบทสนทนาหน้า " + page,
+    };
+
     private static QuestConfig RecordedFlow(string[] recordedPages, int loops)
     {
         // What a recording of the normal Rookie G round produces.
@@ -42,12 +51,14 @@ public class RecordingTests
         Assert.All(dialog.KnownPageHashes, h => Assert.NotNull(h));
 
         Assert.Equal(new ScreenPoint(200, 200), cfg.Steps[2].Point);
+        Assert.Equal(62, dialog.Floor); // read from "Chaos Integer.62Byte" while recording
     }
 
     [Fact]
     public async Task Recorded_pages_are_recognised_by_image_even_when_ocr_text_is_garbage()
     {
-        var game = new FakeGame { GarbleOcr = true, LagReads = 3 };
+        var game = RealisticGame(garble: true);
+        game.LagReads = 3;
         var engine = new QuestEngine(game, game, new FakeClock(), new Random(1));
 
         var result = await engine.RunAsync(RecordedFlow(FakeGame.RookiePages, 2), new ScreenPoint(10, 10), CancellationToken.None);
@@ -58,13 +69,31 @@ public class RecordingTests
     }
 
     [Fact]
-    public async Task A_page_that_was_never_recorded_stops_the_run()
+    public async Task Not_enough_items_never_counts_as_a_turn_in()
+    {
+        // The dialog takes another turn and closes ("not enough"). The recording has a floor, so an
+        // unknown page doesn't stop right away (system check takes over), but the round can't end
+        // without "[Chaos Integer.62Byte]", so the run stops with nothing handed in.
+        var notEnough = new[] { FakeGame.RookiePages[0], FakeGame.RookiePages[1], "[1] ยังรวบรวมไม่ครบเลยนะ" };
+        var game = new FakeGame(notEnough) { StaysOpenUntilEmptyClick = false };
+        var engine = new QuestEngine(game, game, new FakeClock(), new Random(1));
+
+        var result = await engine.RunAsync(RecordedFlow(FakeGame.RookiePages, 3), new ScreenPoint(10, 10), CancellationToken.None);
+
+        Assert.StartsWith("หยุด", result.Message);
+        Assert.Equal(0, result.Completed);
+    }
+
+    [Fact]
+    public async Task Without_a_floor_a_page_that_was_never_recorded_stops_right_away()
     {
         var notEnough = new[] { FakeGame.RookiePages[0], FakeGame.RookiePages[1], "[1] ยังรวบรวมไม่ครบเลยนะ" };
         var game = new FakeGame(notEnough);
         var engine = new QuestEngine(game, game, new FakeClock(), new Random(1));
+        var cfg = RecordedFlow(FakeGame.RookiePages, 3);
+        cfg.Steps[1].Floor = 0;
 
-        var result = await engine.RunAsync(RecordedFlow(FakeGame.RookiePages, 3), new ScreenPoint(10, 10), CancellationToken.None);
+        var result = await engine.RunAsync(cfg, new ScreenPoint(10, 10), CancellationToken.None);
 
         Assert.Contains("ข้อความเปลี่ยน", result.Message);
         Assert.Equal(0, game.CompletedTurnIns);

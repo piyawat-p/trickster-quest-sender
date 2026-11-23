@@ -106,7 +106,9 @@ public sealed class QuestEngine
                                     restartRound = true;
                                     break;
                                 case DialogOutcomeKind.MissingRequired:
-                                    return Stop($"หยุด: บทสนทนาจบโดยไม่เจอ “{step.Text}” ({done})");
+                                    return Stop(step.Floor > 0
+                                        ? $"หยุด: บทสนทนาจบโดยไม่เจอ Chaos Integer.{step.Floor}Byte — ชั้นหอคอยตรงไหม? ({done})"
+                                        : $"หยุด: บทสนทนาจบโดยไม่เจอ “{step.Text}” ({done})");
                                 case DialogOutcomeKind.StopTextSeen:
                                     return Stop($"หยุด: เจอข้อความ “{step.StopText}” ({done})");
                                 case DialogOutcomeKind.TooManyPresses:
@@ -188,27 +190,37 @@ public sealed class QuestEngine
 
     /// <summary>
     /// Press the option key once per new dialog page until the round ends.
-    /// Pages recorded with images (a recorded tab): the page is identified by how it looks; OCR text
-    /// is the fallback, and a page matching nothing recorded = wording changed → stop. A new page
-    /// must be seen on 2 reads in a row before it's pressed. Same page for RetryMs → press again.
-    /// The last recorded page (or the end text) ends the round and is never pressed twice.
-    /// Without recorded pages or an end text, the round ends when the dialog disappears.
+    /// <list type="bullet">
+    /// <item>Which page: recorded page images first, OCR text as fallback; with recorded pages, a page
+    /// matching none of them = wording changed → stop.</item>
+    /// <item>Page changed: by page index, else by how the page looks (works even when OCR can't read
+    /// Thai), else by text. A new page must be seen on 2 reads in a row before it's pressed.</item>
+    /// <item>Same page for RetryMs → the press was lost → press again.</item>
+    /// <item>Last page (any of): the last recorded page · an end text ("a | b") · "[Chaos Integer.{Floor}Byte]".
+    /// It is pressed once and ends the round.</item>
+    /// <item>Must appear during the dialog: the required text (any alternative) and, if Floor is set,
+    /// "Chaos Integer.{Floor}Byte" — otherwise the round counts as failed and the run stops.</item>
+    /// </list>
     /// </summary>
     private async Task<DialogOutcome> RunDialogAsync(QuestStep step, string label, ScreenPoint near, CancellationToken ct)
     {
-        string required = step.Text.Trim();
-        string stopWord = step.StopText.Trim();
-        string endText = step.EndText.Trim();
+        var requiredAlts = TextMatching.Alternatives(step.Text);
+        var stopAlts = TextMatching.Alternatives(step.StopText);
+        var endAlts = TextMatching.Alternatives(step.EndText);
+        int floor = step.Floor;
         var known = step.KnownPages;
         // Images for this run: start as recorded; a page recognised only by text gets its current
         // look here (this run only; the tab's recording is never changed).
         var images = step.KnownPageHashes.ToArray();
-        bool useImages = images.Any(h => h is not null);
+        bool useRecordedImages = images.Any(h => h is not null);
+        bool hasEndRule = endAlts.Count > 0 || known.Count > 0 || floor > 0;
         double scale = _screen.PointScale;
 
-        bool sawRequired = required.Length == 0;
+        bool sawRequired = requiredAlts.Count == 0;
+        bool floorSeen = floor <= 0;
         int presses = 0, missing = 0, candidateReads = 0;
-        string? lastPageKey = null, candidateKey = null;
+        string? lastKey = null, candidateKey = null;
+        byte[]? lastLook = null, candidateLook = null;
         DateTime lastPressAt = DateTime.MinValue;
         DateTime openDeadline = _clock.Now.AddMilliseconds(step.TimeoutMs);
 
@@ -225,10 +237,13 @@ public sealed class QuestEngine
                 frame = await _screen.ReadScreenFrameAsync(near, ct);
                 option = TextMatching.FindDialogOption(step.Key, frame.Hits);
             }
+            var hits = frame.Hits;
 
-            if (required.Length > 0 && TextMatching.FindFuzzy(required, frame.Hits) is not null) sawRequired = true;
-            if (stopWord.Length > 0 && TextMatching.FindFuzzy(stopWord, frame.Hits) is not null)
+            if (!sawRequired && requiredAlts.Any(r => TextMatching.FindFuzzy(r, hits) is not null)) sawRequired = true;
+            if (!floorSeen && TextMatching.HasFloorItem(hits, floor, bracketed: false)) floorSeen = true;
+            if (stopAlts.Any(w => TextMatching.FindFuzzy(w, hits) is not null))
                 return new(DialogOutcomeKind.StopTextSeen);
+            var success = sawRequired && floorSeen ? DialogOutcomeKind.Finished : DialogOutcomeKind.MissingRequired;
 
             if (option is null)
             {
@@ -239,63 +254,79 @@ public sealed class QuestEngine
                 }
                 else if (++missing >= 2)
                 {
-                    if (endText.Length > 0 || known.Count > 0) return new(DialogOutcomeKind.ClosedBeforeEnd);
-                    return new(sawRequired ? DialogOutcomeKind.Finished : DialogOutcomeKind.MissingRequired);
+                    return new(hasEndRule ? DialogOutcomeKind.ClosedBeforeEnd : success);
                 }
                 candidateKey = null;
+                candidateLook = null;
                 await _clock.Delay(120, ct);
                 continue;
             }
 
             missing = 0;
             _dialogRegion = RegionAroundOption(option.Rect);
+            byte[]? look = frame.Image?.Fingerprint(ImageFingerprint.PageRect(option.Rect, scale));
 
-            // ---- Which page is this?
+            // ---- Which recorded page is this?
             int? pageIndex = null;
             string how = "";
-            byte[]? look = null;
-            if (useImages && frame.Image is { } image)
+            if (useRecordedImages && look is not null)
             {
-                look = image.Fingerprint(ImageFingerprint.PageRect(option.Rect, scale));
-                if (look is not null)
+                var scored = images
+                    .Select((h, i) => (Index: i, Distance: h is null ? double.MaxValue : ImageFingerprint.Distance(look, h)))
+                    .Where(x => x.Distance <= 1)
+                    .OrderBy(x => x.Distance)
+                    .ToList();
+                if (scored.Count > 0 && scored[0].Distance <= ImageFingerprint.MatchThreshold
+                    && (scored.Count < 2 || scored[1].Distance - scored[0].Distance >= ImageFingerprint.RequiredMargin))
                 {
-                    var scored = images
-                        .Select((h, i) => (Index: i, Distance: h is null ? double.MaxValue : ImageFingerprint.Distance(look, h)))
-                        .Where(x => x.Distance <= 1)
-                        .OrderBy(x => x.Distance)
-                        .ToList();
-                    if (scored.Count > 0 && scored[0].Distance <= ImageFingerprint.MatchThreshold
-                        && (scored.Count < 2 || scored[1].Distance - scored[0].Distance >= ImageFingerprint.RequiredMargin))
-                    {
-                        pageIndex = scored[0].Index;
-                        how = $"ภาพตรง {Math.Round((1 - scored[0].Distance) * 100)}%";
-                    }
+                    pageIndex = scored[0].Index;
+                    how = $"ภาพตรง {Math.Round((1 - scored[0].Distance) * 100)}%";
                 }
             }
-            if (pageIndex is null)
+            if (pageIndex is null && known.Count > 0)
             {
                 int byText = known.ToList().FindIndex(k => TextMatching.SameLine(k, option.Text));
                 if (byText >= 0)
                 {
                     pageIndex = byText;
                     how = "ข้อความ";
-                    if (useImages && look is not null) images[byText] = look;
+                    if (useRecordedImages && look is not null) images[byText] = look;
                 }
             }
-            if (pageIndex is null && known.Count > 0)
+            // Not one of the recorded pages. Without a floor, that means the wording changed → stop.
+            // With a floor set, the system check takes over ("recorded OR system check"): keep
+            // pressing, judge page changes by look, and end on "[Chaos Integer.{Floor}Byte]".
+            if (pageIndex is null && known.Count > 0 && floor <= 0)
                 return new(DialogOutcomeKind.UnknownPage, option.Text);
+            if (pageIndex is null && known.Count > 0) how = "ไม่ตรงกับที่บันทึก · ใช้เช็กชั้น";
 
-            // Pages are compared by index when known, otherwise by their option text.
-            string pageKey = pageIndex is { } pi ? $"#{pi}" : TextMatching.Normalize(option.Text);
-            bool isNewPage = lastPageKey is not null && pageIndex is null && !lastPageKey.StartsWith('#')
-                ? !TextMatching.SameLine(lastPageKey, option.Text)
-                : pageKey != lastPageKey;
+            // ---- Is it a new page? (by index, else by look, else by text)
+            string? key = null;
+            bool isNewPage, sameAsCandidate;
+            if (pageIndex is { } pi)
+            {
+                key = $"#{pi}";
+                isNewPage = key != lastKey;
+                sameAsCandidate = candidateKey == key;
+            }
+            else if (look is not null)
+            {
+                isNewPage = lastLook is null || ImageFingerprint.Distance(look, lastLook) > ImageFingerprint.PageChangeThreshold;
+                sameAsCandidate = candidateLook is not null
+                                  && ImageFingerprint.Distance(look, candidateLook) <= ImageFingerprint.PageChangeThreshold;
+            }
+            else
+            {
+                key = option.Text;
+                isNewPage = lastKey is null || !TextMatching.SameLine(lastKey, option.Text);
+                sameAsCandidate = candidateKey is not null && TextMatching.SameLine(candidateKey, option.Text);
+            }
 
-            // ---- New page: confirm on two reads in a row first.
+            // ---- New page: confirm on two reads in a row first (no acting on a half-drawn page).
             if (isNewPage)
             {
-                if (candidateKey == pageKey) candidateReads++;
-                else { candidateKey = pageKey; candidateReads = 1; }
+                if (sameAsCandidate) candidateReads++;
+                else { candidateKey = key; candidateLook = look; candidateReads = 1; }
                 if (candidateReads < 2)
                 {
                     await _clock.Delay(120, ct);
@@ -307,21 +338,26 @@ public sealed class QuestEngine
             if (isNewPage || stuck)
             {
                 if (presses >= step.MaxPresses) return new(DialogOutcomeKind.TooManyPresses);
-                bool isLastRecorded = pageIndex is not null && known.Count > 0 && pageIndex == known.Count - 1;
-                bool isEnd = isLastRecorded || (endText.Length > 0 && TextMatching.SameLine(endText, option.Text));
-                string pageLabel = pageIndex is { } p ? $"หน้า {p + 1}/{known.Count} ({how})" : option.Text;
+                bool isEnd = (pageIndex is not null && known.Count > 0 && pageIndex == known.Count - 1)
+                             || endAlts.Any(e => TextMatching.SameLine(e, option.Text))
+                             || TextMatching.HasFloorItem(hits, floor, bracketed: true);
+                string pageLabel = pageIndex is { } p
+                    ? $"หน้า {p + 1}/{known.Count} ({how})"
+                    : $"หน้าที่ {presses + 1}{(how.Length > 0 ? $" ({how})" : "")}";
                 Status($"{label}: กด {step.Key} — {pageLabel}{(isNewPage ? "" : " (กดซ้ำ)")}{(isEnd ? " · หน้าสุดท้าย" : "")}");
                 await _input.PressKeyAsync(step.Key, ct);
                 presses++;
-                lastPageKey = pageKey;
+                lastKey = key;
+                lastLook = look;
                 lastPressAt = _clock.Now;
                 candidateKey = null;
+                candidateLook = null;
 
                 if (isEnd)
                 {
                     // Give the game a moment to take the press, but never press the last page twice.
                     await _clock.Delay(Math.Min(step.RetryMs, 1000), ct);
-                    return new(sawRequired ? DialogOutcomeKind.Finished : DialogOutcomeKind.MissingRequired);
+                    return new(success);
                 }
             }
             await _clock.Delay(120, ct);

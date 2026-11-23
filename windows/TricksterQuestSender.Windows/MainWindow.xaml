@@ -210,11 +210,15 @@
                                             <StackPanel Orientation="Horizontal">
                                                 <TextBlock Text="ปุ่ม" Style="{StaticResource Label}" Margin="0,0,4,0"/>
                                                 <ComboBox Width="70" ItemsSource="{x:Static local:Ui.Keys}" SelectedItem="{Binding Key}"/>
-                                                <TextBlock Text="หน้าสุดท้าย" Style="{StaticResource Label}"/>
-                                                <TextBox Width="220" Text="{Binding EndText, UpdateSourceTrigger=PropertyChanged}"
-                                                         ToolTip="กดหน้านี้แล้วถือว่าจบรอบ (เว้นว่าง = จบเมื่อบทสนทนาปิด)"/>
+                                                <TextBlock Text="ชั้นหอคอย" Style="{StaticResource Label}" FontWeight="SemiBold"/>
+                                                <TextBox Width="44" Text="{Binding Floor}"
+                                                         ToolTip="เช่น 2 → ต้องเจอ Chaos Integer.2Byte ระหว่างคุย และเจอ [Chaos Integer.2Byte] = หน้าสุดท้าย&#x0a;เป็นการตรวจของระบบ: ถ้าหน้าไม่ตรงกับที่บันทึก ก็ยังทำต่อได้ด้วยเงื่อนไขนี้ (0 = ไม่ใช้)"/>
+                                                <TextBlock Text="หรือ หน้าสุดท้าย" Style="{StaticResource Label}"/>
+                                                <TextBox Width="200" Text="{Binding EndText, UpdateSourceTrigger=PropertyChanged}"
+                                                         ToolTip="กดหน้านี้แล้วถือว่าจบรอบ · ใส่หลายแบบคั่นด้วย |  เช่น  เข้าใจแล้ว | ช่วยหามาให้"/>
                                                 <TextBlock Text="หยุดทันทีถ้าเจอ" Style="{StaticResource Label}"/>
-                                                <TextBox Width="160" Text="{Binding StopText, UpdateSourceTrigger=PropertyChanged}"/>
+                                                <TextBox Width="150" Text="{Binding StopText, UpdateSourceTrigger=PropertyChanged}"
+                                                         ToolTip="ใส่หลายแบบคั่นด้วย |"/>
                                             </StackPanel>
                                             <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
                                                 <TextBlock Text="รอบทสนทนาขึ้น (ms)" Style="{StaticResource Label}" Margin="0,0,4,0"/>

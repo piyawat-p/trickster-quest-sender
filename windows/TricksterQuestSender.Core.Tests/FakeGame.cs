@@ -48,6 +48,8 @@ public sealed class FakeGame : IInputDriver, IScreenReader
     public List<string> ChatLines { get; } = new() { "ได้รับไอเทม :[[Holy] Code C] Rookie G" };
     /// <summary>OCR reads every option line as the same garbage (only "[1]" survives).</summary>
     public bool GarbleOcr { get; set; }
+    /// <summary>Dialog text above the options, per page (default: "ข้อความบทสนทนาหน้า N").</summary>
+    public Func<int, string>? BodyText { get; set; }
 
     /// <summary>Stable fake "image" of a page: depends only on its text.</summary>
     public static byte[] HashOf(string pageText)
@@ -131,7 +133,7 @@ public sealed class FakeGame : IInputDriver, IScreenReader
         if (Page >= 0)
         {
             hits.Add(new TextHit("Rookie G", new ScreenRect(1000, 100, 120, 20))); // dialog title
-            hits.Add(new TextHit("ข้อความบทสนทนาหน้า " + Page, new ScreenRect(1000, 140, 300, 20)));
+            hits.Add(new TextHit(BodyText?.Invoke(Page) ?? "ข้อความบทสนทนาหน้า " + Page, new ScreenRect(1000, 140, 300, 20)));
             hits.Add(new TextHit(GarbleOcr ? "[1] ฑฒณ?? ญญ" : _pages[Page], new ScreenRect(1010, 220, 300, 20)));
         }
         return hits;

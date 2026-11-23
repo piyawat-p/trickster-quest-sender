@@ -52,6 +52,38 @@ public static class TextMatching
         return x.Contains(y) || y.Contains(x) || Similarity(x, y) >= 0.75;
     }
 
+    /// <summary>"a | b | c" → ["a", "b", "c"]: a field with several alternatives (any one may match).</summary>
+    public static IReadOnlyList<string> Alternatives(string field) =>
+        field.Split('|').Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
+
+    /// <summary>The quest item of a tower floor: "Chaos Integer.2Byte" for floor 2. Tolerates OCR
+    /// spacing and I/l/1 mix-ups; "62Byte" does not count as floor 2.</summary>
+    private static string FloorItemCore(int floor) =>
+        @"chaos\s*[il1|]\s*n\s*t\s*e\s*g\s*e\s*r\s*[.,·:]?\s*(?<![0-9])" + floor + @"\s*b\s*y\s*t\s*e";
+
+    /// <param name="bracketed">Require "[" before or "]" after it (the form shown on the last page).</param>
+    public static bool HasFloorItem(IEnumerable<TextHit> hits, int floor, bool bracketed)
+    {
+        if (floor <= 0) return false;
+        string core = FloorItemCore(floor);
+        string pattern = bracketed ? @"[\[\(\{]\s*" + core + "|" + core + @"\s*[\]\)\}]" : core;
+        var regex = new Regex(pattern, RegexOptions.IgnoreCase);
+        return hits.Any(h => regex.IsMatch(h.Text));
+    }
+
+    /// <summary>Floor number in "Chaos Integer.{n}Byte" if any line shows one.</summary>
+    public static int? FindFloor(IEnumerable<TextHit> hits)
+    {
+        var regex = new Regex(@"chaos\s*[il1|]\s*n\s*t\s*e\s*g\s*e\s*r\s*[.,·:]?\s*([0-9]{1,3})\s*b\s*y\s*t\s*e",
+                              RegexOptions.IgnoreCase);
+        foreach (var h in hits)
+        {
+            var m = regex.Match(h.Text);
+            if (m.Success && int.TryParse(m.Groups[1].Value, out int n)) return n;
+        }
+        return null;
+    }
+
     /// <summary>Exact "contains" first, else the most similar line if similar enough.</summary>
     public static TextHit? FindFuzzy(string keyword, IEnumerable<TextHit> hits, double threshold = 0.75)
     {

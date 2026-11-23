@@ -69,6 +69,7 @@ public sealed class QuestStep : ObservableObject
     private string _endText = "";
     private string _pages = "";
     private string _pageHashes = "";
+    private int _floor;
 
     public Guid Id { get => _id; set => Set(ref _id, value); }
     public StepKind Kind { get => _kind; set => Set(ref _kind, value); }
@@ -95,6 +96,12 @@ public sealed class QuestStep : ObservableObject
     public string Pages { get => _pages; set => Set(ref _pages, value); }
     /// <summary>DialogUntilEnd: base64 fingerprint of each recorded page, one per line, same order as Pages.</summary>
     public string PageHashes { get => _pageHashes; set => Set(ref _pageHashes, value); }
+    /// <summary>
+    /// DialogUntilEnd: tower floor (0 = not set). Builds the condition "Chaos Integer.{floor}Byte"
+    /// (English + digits, which OCR reads far better than Thai): it must appear during the dialog,
+    /// and "[Chaos Integer.{floor}Byte]" in brackets marks the last page.
+    /// </summary>
+    public int Floor { get => _floor; set => Set(ref _floor, Math.Max(0, value)); }
 
     [JsonIgnore] public IReadOnlyList<string> NpcNames => SplitList(Text, ',');
     [JsonIgnore] public IReadOnlyList<string> KnownPages => SplitList(Pages, '\n');

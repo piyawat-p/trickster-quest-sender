@@ -17,6 +17,11 @@ public static class ImageFingerprint
     public const double MatchThreshold = 0.12;
     /// <summary>The best page must beat the runner-up by this much, otherwise it's ambiguous.</summary>
     public const double RequiredMargin = 0.05;
+    /// <summary>
+    /// Without recorded pages: the page counts as changed when its look moves this far from the page
+    /// last pressed. Looser than MatchThreshold, so small animations near the dialog don't count.
+    /// </summary>
+    public const double PageChangeThreshold = 0.2;
 
     /// <summary>From a 33×16 grayscale sample (row-major, one byte per pixel).</summary>
     public static byte[] FromGraySample(byte[] gray)

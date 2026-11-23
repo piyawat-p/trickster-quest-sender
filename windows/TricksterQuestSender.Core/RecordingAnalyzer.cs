@@ -60,12 +60,14 @@ public static class RecordingAnalyzer
         {
             var pages = new List<string>();
             var hashes = new List<string>();
+            int floor = 0;
             string key = "1";
             for (int i = firstKey; i <= lastKey; i++)
             {
                 var a = list[i];
                 if (a.Kind != RecordedActionKind.Key) continue;
                 key = a.Key;
+                if (floor == 0 && TextMatching.FindFloor(a.Hits) is { } f) floor = f;
                 var option = TextMatching.FindDialogOption(a.Key, a.Hits);
                 if (option is null) continue;
                 pages.Add(option.Text);
@@ -82,6 +84,7 @@ public static class RecordingAnalyzer
                 PageHashes = string.Join("\n", hashes),
                 EndText = pages.LastOrDefault() ?? "",
                 MaxPresses = Math.Max(15, pages.Count * 2),
+                Floor = floor,
             });
         }
 
