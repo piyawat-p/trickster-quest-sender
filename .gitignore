@@ -1,0 +1,11 @@
+.build/
+build/
+.swiftpm/
+my-settings.plist
+_to_delete/
+bin/
+obj/
+publish/
+Releases/
+*.user
+hang.txt

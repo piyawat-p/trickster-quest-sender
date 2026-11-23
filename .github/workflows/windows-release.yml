@@ -1,0 +1,63 @@
+name: Windows release
+
+# Push a tag like v1.2.0 → tests run → Windows app is built, packed with Velopack and
+# published to GitHub Releases. Installed apps pick the update up on next launch.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Core tests
+        run: dotnet test windows/TricksterQuestSender.Core.Tests
+
+  release:
+    needs: test
+    runs-on: windows-latest
+    env:
+      REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Version from tag
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}".TrimStart('v')
+          if ($v -notmatch '^\d+\.\d+\.\d+') { $v = "0.0.${{ github.run_number }}" }
+          "VERSION=$v" >> $env:GITHUB_ENV
+
+      - name: Publish
+        run: >
+          dotnet publish windows/TricksterQuestSender.Windows -c Release -r win-x64 --self-contained true
+          -o publish -p:Version=${{ env.VERSION }} -p:UpdateRepoUrl=${{ env.REPO_URL }}
+
+      - name: Install Velopack CLI
+        run: dotnet tool install -g vpk
+
+      - name: Get previous release (for small delta updates)
+        continue-on-error: true
+        run: vpk download github --repoUrl ${{ env.REPO_URL }} --token ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pack installer
+        run: >
+          vpk pack --packId TricksterQuestSender --packVersion ${{ env.VERSION }} --packDir publish
+          --mainExe TricksterQuestSender.exe --packTitle "Trickster Quest Sender"
+
+      - name: Upload to GitHub Releases
+        run: >
+          vpk upload github --repoUrl ${{ env.REPO_URL }} --publish
+          --releaseName "Trickster Quest Sender ${{ env.VERSION }}" --tag v${{ env.VERSION }}
+          --token ${{ secrets.GITHUB_TOKEN }}

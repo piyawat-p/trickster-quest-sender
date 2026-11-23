@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- 10.0.19041 gives access to Windows.Media.Ocr (built-in OCR). -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Lets you build (not run) this project on macOS too: dotnet build -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AssemblyName>TricksterQuestSender</AssemblyName>
+    <RootNamespace>QuestSenderWin</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <StartupObject>QuestSenderWin.Program</StartupObject>
+    <Version>1.0.0</Version>
+    <!-- Set by the release workflow: -p:UpdateRepoUrl=https://github.com/OWNER/REPO -->
+    <UpdateRepoUrl Condition="'$(UpdateRepoUrl)' == ''"></UpdateRepoUrl>
+  </PropertyGroup>
+  <ItemGroup>
+    <AssemblyMetadata Include="UpdateRepoUrl" Value="$(UpdateRepoUrl)" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Velopack" Version="0.0.*" />
+    <PackageReference Include="System.Drawing.Common" Version="8.0.*" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\TricksterQuestSender.Core\TricksterQuestSender.Core.csproj" />
+  </ItemGroup>
+</Project>
