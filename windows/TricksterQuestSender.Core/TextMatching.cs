@@ -24,6 +24,27 @@ public static class TextMatching
         return sb.ToString();
     }
 
+    /// <summary>
+    /// Folds letters Windows OCR mixes up in Latin names ("Rookie 6" → "rookie g", "Part-Tirner G"),
+    /// so both sides compare the same way.
+    /// </summary>
+    public static string OcrFold(string compact) => compact
+        .Replace("rn", "m").Replace('6', 'g').Replace('0', 'o').Replace('1', 'i').Replace('l', 'i')
+        .Replace('|', 'i').Replace('5', 's');
+
+    /// <summary>
+    /// Name label vs NPC name (both compacted + folded): exact, the name with a little noise around it,
+    /// or a near-miss with the same last letter (so "Rookie G" never matches "Rookie A").
+    /// </summary>
+    public static bool NpcNameMatches(string label, string name)
+    {
+        if (label.Length == 0 || name.Length == 0) return false;
+        if (label == name) return true;
+        if (label.Contains(name) && label.Length <= name.Length + 3) return true;
+        return name.Length >= 5 && Math.Abs(label.Length - name.Length) <= 2
+               && label[^1] == name[^1] && Similarity(label, name) >= 0.8;
+    }
+
     /// <summary>1 − (edit distance / longer length).</summary>
     public static double Similarity(string a, string b)
     {
@@ -111,7 +132,9 @@ public static class TextMatching
             "Enter" or "Space" => "[0-9lI|]",
             _ => Regex.Escape(key),
         };
-        var pattern = new Regex(@"^\s*[\[\(\{|]\s*" + digit + @"\s*[\]\)\}|]");
+        // Windows OCR is sloppy here: allow a stray mark before the bracket ("• [1]", "'[1]") and a
+        // missing opening bracket ("1] ...").
+        var pattern = new Regex(@"^\s*(?:[^\p{L}\p{N}\s]{0,2}\s*[\[\(\{|]\s*" + digit + @"\s*[\]\)\}|]|" + digit + @"\s*[\]\)\}])");
         return hits.FirstOrDefault(h => pattern.IsMatch(h.Text));
     }
 
@@ -123,7 +146,7 @@ public static class TextMatching
     public static TextHit? FindNpc(IReadOnlyList<string> names, IEnumerable<DisplayText> screens,
                                    ScreenPoint? prefer, double maxDistance = 150)
     {
-        var targets = names.Select(Compact).Where(t => t.Length > 0).ToList();
+        var targets = names.Select(n => OcrFold(Compact(n))).Where(t => t.Length > 0).ToList();
         if (targets.Count == 0) return null;
         TextHit? best = null;
         double bestDistance = double.MaxValue;
@@ -132,8 +155,8 @@ public static class TextMatching
             var centre = screen.Bounds.Center;
             foreach (var hit in screen.Hits)
             {
-                string t = Compact(hit.Text);
-                bool matches = targets.Any(n => t == n || (t.Contains(n) && t.Length <= n.Length + 3));
+                string t = OcrFold(Compact(hit.Text));
+                bool matches = targets.Any(n => NpcNameMatches(t, n));
                 if (!matches) continue;
                 var reference = prefer ?? centre;
                 double d = hit.Center.DistanceTo(reference);

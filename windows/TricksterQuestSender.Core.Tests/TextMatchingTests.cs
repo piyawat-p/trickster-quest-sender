@@ -85,4 +85,30 @@ public class TextMatchingTests
         Assert.Contains("\"kind\": \"dialogUntilEnd\"", back);
         Assert.Contains("\"npcOffsetY\": -35", back);
     }
+
+    [Theory]
+    [InlineData("• [1] ทำ [เควส]")]
+    [InlineData("'[1] ทำ [เควส]")]
+    [InlineData("1] ทำ [เควส]")]
+    [InlineData("[l) ทำ [เควส]")]
+    public void Sloppy_windows_ocr_of_the_option_marker_still_counts(string line)
+    {
+        Assert.NotNull(TextMatching.FindDialogOption("1", new[] { new TextHit(line, new ScreenRect(0, 0, 100, 20)) }));
+    }
+
+    [Theory]
+    [InlineData("Rookie G", true)]
+    [InlineData("Rookie 6", true)]
+    [InlineData("RookieG", true)]
+    [InlineData("Rookle G", true)]
+    [InlineData("Part-Tirner G", true)]
+    [InlineData("Part Timer G", true)]
+    [InlineData("Rookie A", false)]
+    [InlineData("Rookie G ได้รับไอเทม Holy Code", false)]
+    public void Npc_names_survive_windows_ocr_mistakes(string label, bool found)
+    {
+        var screens = new[] { new DisplayText(new ScreenRect(0, 0, 1920, 1080), new[] { new TextHit(label, new ScreenRect(900, 500, 80, 20)) }) };
+        var hit = TextMatching.FindNpc(new[] { "Rookie G", "Part-Timer G" }, screens, null);
+        Assert.Equal(found, hit is not null);
+    }
 }

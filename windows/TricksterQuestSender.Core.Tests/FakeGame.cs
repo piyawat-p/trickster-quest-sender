@@ -40,6 +40,11 @@ public sealed class FakeGame : IInputDriver, IScreenReader
     /// <summary>After the last page is pressed, the dialog stays until empty space is clicked.</summary>
     public bool StaysOpenUntilEmptyClick { get; set; } = true;
 
+    /// <summary>Empty-space clicks that fail to close the finished dialog.</summary>
+    public int IgnoreCloseClicks { get; set; }
+    /// <summary>Text shown as the NPC's name label (what OCR reads).</summary>
+    public string NpcLabelText { get; set; } = "Rookie G";
+
     public int Page { get; private set; } = -1; // -1 = closed
     public int KeyPresses { get; private set; }
     public List<string> PressedOn { get; } = new();
@@ -48,6 +53,12 @@ public sealed class FakeGame : IInputDriver, IScreenReader
     public List<string> ChatLines { get; } = new() { "ได้รับไอเทม :[[Holy] Code C] Rookie G" };
     /// <summary>OCR reads every option line as the same garbage (only "[1]" survives).</summary>
     public bool GarbleOcr { get; set; }
+    /// <summary>Screen reads (0-based, counted while the dialog is open) where OCR misses the "[1]" line.</summary>
+    public Func<int, bool>? OcrMissesOption { get; set; }
+    /// <summary>Pages whose "[1]" line OCR can never read (the dialog is still drawn).</summary>
+    public HashSet<int> UnreadableOptionPages { get; } = new();
+    private int _openReads;
+
     /// <summary>Dialog text above the options, per page (default: "ข้อความบทสนทนาหน้า N").</summary>
     public Func<int, string>? BodyText { get; set; }
 
@@ -78,7 +89,11 @@ public sealed class FakeGame : IInputDriver, IScreenReader
         Clicks.Add(p);
         bool onNpc = Math.Abs(p.X - NpcLabel.X) < 40 && p.Y < NpcLabel.Y && p.Y > NpcLabel.Y - 80;
         if (onNpc && Page < 0) { Page = 0; _finishedRound = false; _pendingAdvanceIn = -1; }
-        else if (!onNpc && _finishedRound) { Page = -1; _pendingAdvanceIn = -1; } // empty-space click closes it
+        else if (!onNpc && _finishedRound)
+        {
+            if (IgnoreCloseClicks > 0) IgnoreCloseClicks--; // this close click got lost
+            else { Page = -1; _pendingAdvanceIn = -1; }   // empty-space click closes it
+        }
         return Task.CompletedTask;
     }
 
@@ -127,14 +142,17 @@ public sealed class FakeGame : IInputDriver, IScreenReader
         Tick();
         var hits = new List<TextHit>
         {
-            new("Rookie G", new ScreenRect(NpcLabel.X - 40, NpcLabel.Y - 10, 80, 20)),
+            new(NpcLabelText, new ScreenRect(NpcLabel.X - 40, NpcLabel.Y - 10, 80, 20)),
         };
         hits.AddRange(ChatLines.Select((l, i) => new TextHit(l, new ScreenRect(10, 900 + i * 20, 600, 18))));
         if (Page >= 0)
         {
             hits.Add(new TextHit("Rookie G", new ScreenRect(1000, 100, 120, 20))); // dialog title
             hits.Add(new TextHit(BodyText?.Invoke(Page) ?? "ข้อความบทสนทนาหน้า " + Page, new ScreenRect(1000, 140, 300, 20)));
-            hits.Add(new TextHit(GarbleOcr ? "[1] ฑฒณ?? ญญ" : _pages[Page], new ScreenRect(1010, 220, 300, 20)));
+            bool missed = UnreadableOptionPages.Contains(Page) || (OcrMissesOption?.Invoke(_openReads) ?? false);
+            _openReads++;
+            if (!missed)
+                hits.Add(new TextHit(GarbleOcr ? "[1] ฑฒณ?? ญญ" : _pages[Page], new ScreenRect(1010, 220, 300, 20)));
         }
         return hits;
     }

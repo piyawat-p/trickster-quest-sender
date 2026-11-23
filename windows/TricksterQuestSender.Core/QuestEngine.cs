@@ -14,6 +14,9 @@ public sealed class QuestEngine
     private readonly Random _random;
     /// <summary>Where the dialog was last seen; reading just this area is much faster.</summary>
     private ScreenRect? _dialogRegion;
+    /// <summary>The last dialog page pressed: where its "[1]" line was and how it looked.</summary>
+    private ScreenRect? _lastOptionRect;
+    private byte[]? _lastDialogLook;
 
     public QuestEngine(IInputDriver input, IScreenReader screen, IClock? clock = null, Random? random = null)
     {
@@ -37,6 +40,8 @@ public sealed class QuestEngine
     {
         var steps = config.Steps.Where(s => s.Enabled).ToList();
         _dialogRegion = null;
+        _lastOptionRect = null;
+        _lastDialogLook = null;
         CompletedCount = 0;
         CurrentLoop = 0;
         double scale = _screen.PointScale;
@@ -49,6 +54,7 @@ public sealed class QuestEngine
             ScreenPoint? lastClick = null, lastNpc = null;
             var anchor = startMouse; // which display to read
             int loop = 0, noDialogStreak = 0;
+            bool afterDialog = false; // the previous step finished a dialog → a click now should close it
 
             while (config.Unlimited || loop < Math.Max(config.Loops, 1))
             {
@@ -79,7 +85,9 @@ public sealed class QuestEngine
                             ScreenPoint? labelCenter = hit?.Center ?? lastNpc;
                             if (labelCenter is not { } c)
                                 return Stop($"หยุด: หา {string.Join(" / ", names)} ไม่เจอในรอบที่ {loop} (ส่งสำเร็จ {CompletedCount} รอบ)");
-                            var p = new ScreenPoint(c.X, c.Y + step.NpcOffsetY * scale);
+                            // Dialog didn't open last time → try a little lower / higher on the NPC.
+                            double nudge = (noDialogStreak % 3) switch { 1 => 12, 2 => -12, _ => 0 };
+                            var p = new ScreenPoint(c.X, c.Y + (step.NpcOffsetY + nudge) * scale);
                             await _input.ClickAsync(p, ct);
                             lastClick = p;
                             lastNpc = c;
@@ -131,6 +139,16 @@ public sealed class QuestEngine
                             {
                                 await _input.ClickAsync(pt, ct);
                                 lastClick = pt;
+                                // Closing the quest window: make sure it really closed, click again if not.
+                                for (int attempt = 1; afterDialog; attempt++)
+                                {
+                                    await _clock.Delay(400, ct);
+                                    if (!await DialogStillOpenAsync(anchor, ct)) break;
+                                    if (attempt >= 3)
+                                        return Stop($"หยุด: คลิกปิดเควส 3 ครั้งแล้วหน้าต่างยังไม่ปิด — ลอง “จับตำแหน่ง” จุดว่างใหม่ (ส่งสำเร็จ {CompletedCount} รอบ)");
+                                    Status($"{label}: หน้าต่างเควสยังไม่ปิด คลิกอีกครั้ง ({attempt + 1}/3)");
+                                    await _input.ClickAsync(pt, ct);
+                                }
                             }
                             break;
 
@@ -165,6 +183,7 @@ public sealed class QuestEngine
                         }
                     }
 
+                    afterDialog = step.Kind == StepKind.DialogUntilEnd;
                     if (restartRound) break;
                     int jitter = config.JitterMs > 0 ? _random.Next(0, config.JitterMs + 1) : 0;
                     await _clock.Delay(step.DelayAfterMs + jitter, ct);
@@ -218,10 +237,12 @@ public sealed class QuestEngine
 
         bool sawRequired = requiredAlts.Count == 0;
         bool floorSeen = floor <= 0;
-        int presses = 0, missing = 0, candidateReads = 0;
+        int presses = 0, missing = 0, candidateReads = 0, repressesHere = 0;
         string? lastKey = null, candidateKey = null;
         byte[]? lastLook = null, candidateLook = null;
         DateTime lastPressAt = DateTime.MinValue;
+        DateTime? missingSince = null;
+        ScreenRect? lastOptionRect = null;
         DateTime openDeadline = _clock.Now.AddMilliseconds(step.TimeoutMs);
 
         while (true)
@@ -239,6 +260,20 @@ public sealed class QuestEngine
             }
             var hits = frame.Hits;
 
+            // OCR missed the "[1]" line, but the dialog may still be on screen. Check the picture where
+            // the dialog was: if it still looks like the page we were on (or like a recorded page),
+            // the dialog is open — carry on as if "[1]" had been read at its last position.
+            bool readByLook = false;
+            if (option is null && presses > 0 && lastOptionRect is { } lastRect && frame.Image is { } img)
+            {
+                var lookHere = img.Fingerprint(ImageFingerprint.PageRect(lastRect, scale));
+                if (lookHere is not null && LooksLikeDialog(lookHere, lastLook, images))
+                {
+                    option = new TextHit("", lastRect);
+                    readByLook = true;
+                }
+            }
+
             if (!sawRequired && requiredAlts.Any(r => TextMatching.FindFuzzy(r, hits) is not null)) sawRequired = true;
             if (!floorSeen && TextMatching.HasFloorItem(hits, floor, bracketed: false)) floorSeen = true;
             if (stopAlts.Any(w => TextMatching.FindFuzzy(w, hits) is not null))
@@ -252,18 +287,26 @@ public sealed class QuestEngine
                     if (_clock.Now > openDeadline) return new(DialogOutcomeKind.NeverOpened);
                     Status($"{label}: รอบทสนทนาขึ้น...");
                 }
-                else if (++missing >= 2)
+                else
                 {
-                    return new(hasEndRule ? DialogOutcomeKind.ClosedBeforeEnd : success);
+                    // Only call it closed after it has been gone for a while (several reads, ≥ 1.5 s):
+                    // Windows OCR often misses "[1]" for a read or two while a page redraws.
+                    missing++;
+                    missingSince ??= _clock.Now;
+                    double goneMs = (_clock.Now - missingSince.Value).TotalMilliseconds;
+                    if (missing >= 3 && goneMs >= Math.Max(1500, step.RetryMs))
+                        return new(hasEndRule ? DialogOutcomeKind.ClosedBeforeEnd : success);
+                    Status($"{label}: อ่าน [{step.Key}] ไม่เจอ รอดูอีกครั้ง...");
                 }
-                candidateKey = null;
-                candidateLook = null;
+                // Keep the page we were confirming: a missed read is not a page change.
                 await _clock.Delay(120, ct);
                 continue;
             }
 
             missing = 0;
-            _dialogRegion = RegionAroundOption(option.Rect);
+            missingSince = null;
+            lastOptionRect = option.Rect;
+            if (!readByLook) _dialogRegion = RegionAroundOption(option.Rect);
             byte[]? look = frame.Image?.Fingerprint(ImageFingerprint.PageRect(option.Rect, scale));
 
             // ---- Which recorded page is this?
@@ -283,7 +326,7 @@ public sealed class QuestEngine
                     how = $"ภาพตรง {Math.Round((1 - scored[0].Distance) * 100)}%";
                 }
             }
-            if (pageIndex is null && known.Count > 0)
+            if (pageIndex is null && known.Count > 0 && !readByLook)
             {
                 int byText = known.ToList().FindIndex(k => TextMatching.SameLine(k, option.Text));
                 if (byText >= 0)
@@ -296,7 +339,7 @@ public sealed class QuestEngine
             // Not one of the recorded pages. Without a floor, that means the wording changed → stop.
             // With a floor set, the system check takes over ("recorded OR system check"): keep
             // pressing, judge page changes by look, and end on "[Chaos Integer.{Floor}Byte]".
-            if (pageIndex is null && known.Count > 0 && floor <= 0)
+            if (pageIndex is null && known.Count > 0 && floor <= 0 && !readByLook)
                 return new(DialogOutcomeKind.UnknownPage, option.Text);
             if (pageIndex is null && known.Count > 0) how = "ไม่ตรงกับที่บันทึก · ใช้เช็กชั้น";
 
@@ -318,7 +361,7 @@ public sealed class QuestEngine
             else
             {
                 key = option.Text;
-                isNewPage = lastKey is null || !TextMatching.SameLine(lastKey, option.Text);
+                isNewPage = readByLook ? false : lastKey is null || !TextMatching.SameLine(lastKey, option.Text);
                 sameAsCandidate = candidateKey is not null && TextMatching.SameLine(candidateKey, option.Text);
             }
 
@@ -334,19 +377,25 @@ public sealed class QuestEngine
                 }
             }
 
-            bool stuck = (_clock.Now - lastPressAt).TotalMilliseconds > step.RetryMs;
+            // Same page too long → the press was lost. Wait longer before each extra re-press of the same
+            // page (RetryMs, 2×, 3×): a slow server must not turn one page into two presses.
+            bool stuck = (_clock.Now - lastPressAt).TotalMilliseconds > step.RetryMs * (1 + Math.Min(repressesHere, 2));
             if (isNewPage || stuck)
             {
                 if (presses >= step.MaxPresses) return new(DialogOutcomeKind.TooManyPresses);
                 bool isEnd = (pageIndex is not null && known.Count > 0 && pageIndex == known.Count - 1)
-                             || endAlts.Any(e => TextMatching.SameLine(e, option.Text))
+                             || (!readByLook && endAlts.Any(e => TextMatching.SameLine(e, option.Text)))
                              || TextMatching.HasFloorItem(hits, floor, bracketed: true);
                 string pageLabel = pageIndex is { } p
                     ? $"หน้า {p + 1}/{known.Count} ({how})"
                     : $"หน้าที่ {presses + 1}{(how.Length > 0 ? $" ({how})" : "")}";
+                if (readByLook) pageLabel += " · อ่านจากภาพ";
                 Status($"{label}: กด {step.Key} — {pageLabel}{(isNewPage ? "" : " (กดซ้ำ)")}{(isEnd ? " · หน้าสุดท้าย" : "")}");
                 await _input.PressKeyAsync(step.Key, ct);
                 presses++;
+                repressesHere = isNewPage ? 0 : repressesHere + 1;
+                _lastOptionRect = option.Rect;
+                _lastDialogLook = look;
                 lastKey = key;
                 lastLook = look;
                 lastPressAt = _clock.Now;
@@ -362,6 +411,26 @@ public sealed class QuestEngine
             }
             await _clock.Delay(120, ct);
         }
+    }
+
+    /// <summary>After the close click: is the quest window still there ("[1]" readable, or same picture)?</summary>
+    private async Task<bool> DialogStillOpenAsync(ScreenPoint near, CancellationToken ct)
+    {
+        if (_lastOptionRect is not { } rect) return false;
+        var frame = await _screen.ReadRegionFrameAsync(RegionAroundOption(rect), ct)
+                    ?? await _screen.ReadScreenFrameAsync(near, ct);
+        if (TextMatching.FindDialogOption("1", frame.Hits) is not null) return true;
+        if (_lastDialogLook is null || frame.Image is null) return false;
+        var look = frame.Image.Fingerprint(ImageFingerprint.PageRect(rect, _screen.PointScale));
+        return look is not null && ImageFingerprint.Distance(look, _lastDialogLook) <= ImageFingerprint.PageChangeThreshold;
+    }
+
+    /// <summary>Does this picture still look like the dialog: the page we were on, or a recorded page?</summary>
+    private static bool LooksLikeDialog(byte[] look, byte[]? lastLook, byte[]?[] recorded)
+    {
+        if (lastLook is not null && ImageFingerprint.Distance(look, lastLook) <= ImageFingerprint.PageChangeThreshold)
+            return true;
+        return recorded.Any(h => h is not null && ImageFingerprint.Distance(look, h) <= ImageFingerprint.MatchThreshold);
     }
 
     private ScreenRect RegionAroundOption(ScreenRect r)

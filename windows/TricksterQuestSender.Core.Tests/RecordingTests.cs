@@ -109,4 +109,71 @@ public class RecordingTests
         Assert.Equal(cfg.Steps[1].PageHashes, back.Steps[1].PageHashes);
         Assert.Equal(FakeGame.HashOf(FakeGame.RookiePages[2]), back.Steps[1].KnownPageHashes[2]);
     }
+
+    [Fact]
+    public async Task Ocr_missing_the_option_for_a_few_reads_does_not_end_the_round()
+    {
+        // Windows OCR drops "[1]" on 3 out of every 4 reads; the dialog never actually closes.
+        var game = RealisticGame();
+        game.LagReads = 2;
+        game.OcrMissesOption = read => read % 4 != 0;
+        var engine = new QuestEngine(game, game, new FakeClock(), new Random(1));
+
+        var result = await engine.RunAsync(RecordedFlow(FakeGame.RookiePages, 2), new ScreenPoint(10, 10), CancellationToken.None);
+
+        Assert.Equal(2, result.Completed);
+        Assert.Equal(2, game.CompletedTurnIns);
+    }
+
+    [Fact]
+    public async Task A_page_whose_option_ocr_never_reads_is_handled_by_its_picture()
+    {
+        var game = RealisticGame();
+        game.UnreadableOptionPages.Add(2);
+        var engine = new QuestEngine(game, game, new FakeClock(), new Random(1));
+
+        var result = await engine.RunAsync(RecordedFlow(FakeGame.RookiePages, 2), new ScreenPoint(10, 10), CancellationToken.None);
+
+        Assert.Equal(2, result.Completed);
+        Assert.Equal(2, game.CompletedTurnIns);
+        Assert.Equal(FakeGame.RookiePages.Length * 2, game.PressedOn.Count); // still one press per page
+    }
+
+    [Fact]
+    public async Task A_close_click_that_does_not_close_the_quest_window_is_clicked_again()
+    {
+        var game = RealisticGame();
+        game.IgnoreCloseClicks = 1;
+        var engine = new QuestEngine(game, game, new FakeClock(), new Random(1));
+
+        var result = await engine.RunAsync(RecordedFlow(FakeGame.RookiePages, 2), new ScreenPoint(10, 10), CancellationToken.None);
+
+        Assert.Equal(2, result.Completed);
+        Assert.Equal(2, game.CompletedTurnIns);
+    }
+
+    [Fact]
+    public async Task A_quest_window_that_never_closes_stops_with_a_clear_message()
+    {
+        var game = RealisticGame();
+        game.IgnoreCloseClicks = 99;
+        var engine = new QuestEngine(game, game, new FakeClock(), new Random(1));
+
+        var result = await engine.RunAsync(RecordedFlow(FakeGame.RookiePages, 2), new ScreenPoint(10, 10), CancellationToken.None);
+
+        Assert.Contains("ปิดเควส", result.Message);
+        Assert.Equal(1, result.Completed);
+    }
+
+    [Fact]
+    public async Task Npc_label_misread_by_ocr_is_still_found()
+    {
+        var game = RealisticGame();
+        game.NpcLabelText = "Rookie 6";
+        var engine = new QuestEngine(game, game, new FakeClock(), new Random(1));
+
+        var result = await engine.RunAsync(RecordedFlow(FakeGame.RookiePages, 1), new ScreenPoint(10, 10), CancellationToken.None);
+
+        Assert.Equal(1, result.Completed);
+    }
 }

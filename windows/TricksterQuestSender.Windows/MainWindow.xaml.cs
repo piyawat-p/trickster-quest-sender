@@ -25,10 +25,24 @@ public partial class MainWindow : Window
     private Preset? _recordingTab;
     private CancellationTokenSource? _autoStartCts;
 
+    /// <summary>Version set by the release build from the git tag (v0.1.2 → 0.1.2).</summary>
+    public static string AppVersion
+    {
+        get
+        {
+            var info = typeof(MainWindow).Assembly
+                .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+                .OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion;
+            return (info ?? "dev").Split('+')[0];
+        }
+    }
+
     public MainWindow()
     {
         InitializeComponent();
         DataContext = _vm;
+        Title = $"Trickster Quest Sender v{AppVersion}";
+        VersionText.Text = $"v{AppVersion}";
 
         var state = Storage.Load();
         foreach (var tab in state.Tabs) _vm.Tabs.Add(tab);
